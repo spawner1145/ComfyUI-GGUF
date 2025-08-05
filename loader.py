@@ -7,8 +7,8 @@ import gguf
 from .ops import GGMLTensor
 from .dequant import is_quantized, dequantize_tensor
 
-IMG_ARCH_LIST = {"flux", "sd1", "sdxl", "sd3", "aura", "hidream", "cosmos", "ltxv", "hyvid", "wan", "lumina2", "qwen_image"}
-TXT_ARCH_LIST = {"t5", "t5encoder", "llama"}
+IMG_ARCH_LIST = {"flux", "sd1", "sdxl", "sd3", "aura", "hidream", "cosmos", "ltxv", "hyvid", "wan", "lumina2"}
+TXT_ARCH_LIST = {"t5", "t5encoder", "llama", "gemma2"}
 
 def get_orig_shape(reader, tensor_name):
     field_key = f"comfy.gguf.orig_shape.{tensor_name}"
@@ -165,6 +165,23 @@ LLAMA_SD_MAP = {
     "output.weight": "lm_head.weight",
 }
 
+GEMMA2_SD_MAP = {
+    "blk.": "model.layers.",
+    "token_embd": "model.embed_tokens",
+    "output_norm": "model.norm",
+    "attn_norm": "input_layernorm",
+    "attn_q": "self_attn.q_proj",
+    "attn_k": "self_attn.k_proj",
+    "attn_v": "self_attn.v_proj",
+    "attn_output": "self_attn.o_proj",
+    "post_attn_norm": "post_attention_layernorm",
+    "ffn_up": "mlp.up_proj",
+    "ffn_down": "mlp.down_proj",
+    "ffn_gate": "mlp.gate_proj",
+    "pre_ffn_norm": "pre_feedforward_layernorm",
+    "post_ffn_norm": "post_feedforward_layernorm"
+}
+
 def sd_map_replace(raw_sd, key_map):
     sd = {}
     for k,v in raw_sd.items():
@@ -185,6 +202,21 @@ def llama_permute(raw_sd, n_head, n_head_kv):
         sd[k] = v
     return sd
 
+def gemma2_permute(raw_sd, n_head, n_head_kv):
+    """
+    Gemma2模型的权重置换函数
+    用于将llama.cpp格式的权重转换回原始模型的权重布局
+    """
+    sd = {}
+    permute = lambda x, h: x.reshape(h, 2, x.shape[0] // h // 2, *x.shape[1:]).swapaxes(1, 2).reshape(x.shape)
+    for k, v in raw_sd.items():
+        if k.endswith(("q_proj.weight", "q_proj.bias")):
+            v.data = permute(v.data, n_head)
+        if k.endswith(("k_proj.weight", "k_proj.bias", "v_proj.weight", "v_proj.bias")):
+            v.data = permute(v.data, n_head_kv)
+        sd[k] = v
+    return sd
+
 def gguf_tokenizer_loader(path, temb_shape):
     # convert gguf tokenizer to spiece
     logging.info("Attempting to recreate sentencepiece tokenizer from GGUF file metadata...")
@@ -195,8 +227,15 @@ def gguf_tokenizer_loader(path, temb_shape):
     spm = model.ModelProto()
 
     reader = gguf.GGUFReader(path)
+    arch_str = get_field(reader, "general.architecture", str)
 
-    if get_field(reader, "tokenizer.ggml.model", str) == "t5":
+    if arch_str == "gemma2":
+        spm.trainer_spec.model_type = 2
+        spm.trainer_spec.byte_fallback = True
+        spm.trainer_spec.vocab_size = get_field(reader, "tokenizer.vocab_size", int) or 256000
+        spm.trainer_spec.eos_id = get_field(reader, "tokenizer.eos_token_id", int)
+        spm.trainer_spec.pad_id = get_field(reader, "tokenizer.pad_token_id", int) or -1
+    elif get_field(reader, "tokenizer.ggml.model", str) == "t5":
         if temb_shape == (256384, 4096): # probably UMT5
             spm.trainer_spec.model_type == 1 # Unigram (do we have a T5 w/ BPE?)
         else:
@@ -225,7 +264,7 @@ def gguf_tokenizer_loader(path, temb_shape):
     # unsure if any of these are correct
     spm.trainer_spec.byte_fallback = True
     spm.trainer_spec.vocab_size = len(tokens) # split off unused?
-    spm.trainer_spec.max_sentence_length = 4096
+    spm.trainer_spec.max_sentence_length = 8192
     spm.trainer_spec.eos_id = get_field(reader, "tokenizer.ggml.eos_token_id", int)
     spm.trainer_spec.pad_id = get_field(reader, "tokenizer.ggml.padding_token_id", int)
 
@@ -253,6 +292,14 @@ def gguf_clip_loader(path):
             sd[temb_key] = dequantize_tensor(sd[temb_key], dtype=torch.float16)
         sd = sd_map_replace(sd, LLAMA_SD_MAP)
         sd = llama_permute(sd, 32, 8) # L3
+    elif arch == "gemma2":
+        temb_key = "token_embd.weight"
+        if temb_key in sd:
+            logging.warning(f"Dequantizing {temb_key} to prevent runtime OOM.")
+            sd[temb_key] = dequantize_tensor(sd[temb_key], dtype=torch.float16)
+        sd = sd_map_replace(sd, GEMMA2_SD_MAP)
+        sd = gemma2_permute(sd, n_head=8, n_head_kv=4)
     else:
         pass
     return sd
+    
