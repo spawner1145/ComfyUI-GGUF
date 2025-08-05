@@ -145,11 +145,36 @@ class ModelLumina2(ModelTemplate):
         ("cap_embedder.1.weight", "context_refiner.0.attention.qkv.weight")
     ]
 
-arch_list = [ModelFlux, ModelSD3, ModelAura, ModelHiDream, CosmosPredict2, 
+# 添加Gemma2模型支持，不影响原有模型
+class ModelGemma2(ModelTemplate):
+    arch = "gemma2"
+    shape_fix = False  # 保持原始逻辑，不重塑张量
+    keys_detect = [
+        # 适配移除"model."前缀后的键名
+        ("embed_tokens.weight",),
+        ("layers.0.input_layernorm.weight",),
+        ("layers.0.self_attn.q_proj.weight",),
+        ("norm.weight",)
+    ]
+    keys_banned = []
+    keys_hiprec = [
+        "embed_tokens.weight",
+        ".input_layernorm.weight",
+        ".post_attention_layernorm.weight",
+        ".pre_feedforward_layernorm.weight",
+        ".post_feedforward_layernorm.weight",
+        "norm.weight"
+    ]
+    keys_ignore = [
+        "spiece_model"  # 忽略分词器模型
+    ]
+
+# 在原有架构列表前添加Gemma2，优先检测但不影响其他模型
+arch_list = [ModelGemma2, ModelFlux, ModelSD3, ModelAura, ModelHiDream, CosmosPredict2, 
              ModelLTXV, ModelHyVid, ModelWan, ModelSDXL, ModelSD1, ModelLumina2]
 
 def is_model_arch(model, state_dict):
-    # check if model is correct
+    # 保持原始逻辑不变
     matched = False
     invalid = False
     for match_list in model.keys_detect:
@@ -161,11 +186,20 @@ def is_model_arch(model, state_dict):
     return matched
 
 def detect_arch(state_dict):
+    # 保持原始逻辑不变，仅添加日志便于调试
     model_arch = None
     for arch in arch_list:
         if is_model_arch(arch, state_dict):
             model_arch = arch()
             break
+    
+    # 添加调试信息，不改变原有断言逻辑
+    if model_arch is None:
+        logging.error("Failed to detect model architecture!")
+        logging.error("First 10 keys in state dict:")
+        for i, key in enumerate(list(state_dict.keys())[:10]):
+            logging.error(f"  {i}: {key}")
+    
     assert model_arch is not None, "Unknown model architecture!"
     return model_arch
 
@@ -181,7 +215,7 @@ def parse_args():
     return args
 
 def strip_prefix(state_dict):
-    # prefix for mixed state dict
+    # 保持原始前缀处理逻辑不变
     prefix = None
     for pfx in ["model.diffusion_model.", "model."]:
         if any([x.startswith(pfx) for x in state_dict.keys()]):
@@ -211,6 +245,7 @@ def strip_prefix(state_dict):
     return sd
 
 def load_state_dict(path):
+    # 保持原始加载逻辑不变
     if any(path.endswith(x) for x in [".ckpt", ".pt", ".bin", ".pth"]):
         state_dict = torch.load(path, map_location="cpu", weights_only=True)
         for subkey in ["model", "module"]:
@@ -225,6 +260,7 @@ def load_state_dict(path):
     return strip_prefix(state_dict)
 
 def handle_tensors(writer, state_dict, model_arch):
+    # 保持原始张量处理逻辑不变
     name_lengths = tuple(sorted(
         ((key, len(key)) for key in state_dict.keys()),
         key=lambda item: item[1],
@@ -309,6 +345,7 @@ def handle_tensors(writer, state_dict, model_arch):
         writer.add_tensor(new_name, data, raw_dtype=data_qtype)
 
 def convert_file(path, dst_path=None, interact=True, overwrite=False):
+    # 保持原始转换逻辑不变
     # load & run model detection logic
     state_dict = load_state_dict(path)
     model_arch = detect_arch(state_dict)
@@ -362,4 +399,4 @@ def convert_file(path, dst_path=None, interact=True, overwrite=False):
 if __name__ == "__main__":
     args = parse_args()
     convert_file(args.src, args.dst)
-
+    
