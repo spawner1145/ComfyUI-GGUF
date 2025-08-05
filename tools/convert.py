@@ -165,9 +165,6 @@ class ModelGemma2(ModelTemplate):
         ".post_feedforward_layernorm.weight",
         "norm.weight"
     ]
-    keys_ignore = [
-        "spiece_model"  # 忽略分词器模型
-    ]
 
 # 在原有架构列表前添加Gemma2，优先检测但不影响其他模型
 arch_list = [ModelGemma2, ModelFlux, ModelSD3, ModelAura, ModelHiDream, CosmosPredict2, 
@@ -400,3 +397,4 @@ if __name__ == "__main__":
     args = parse_args()
     convert_file(args.src, args.dst)
     
+
